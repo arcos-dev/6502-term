@@ -64,11 +64,17 @@ typedef struct
     /* Clock and timing */
     cpu_clock_t clock;
 
+    // Performance metrics
+    double performance_percent; // Simulation performance as a percentage
+    double render_time;         // Render time in seconds
+    double actual_fps;          // Calculated frames per second
+
     /* Queues for I/O */
     queue_t input_queue;
     queue_t output_queue;
     pthread_mutex_t input_queue_mutex;
     pthread_mutex_t output_queue_mutex;
+    pthread_cond_t output_queue_cond;
 
     /* Interrupt flags */
     bool IRQ_pending;

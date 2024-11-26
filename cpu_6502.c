@@ -1251,6 +1251,11 @@ cpu_status_t cpu_init(cpu_6502_t *cpu)
     // Initialize opcode table
     initialize_opcode_table();
 
+    // Initialize performance metrics
+    cpu->performance_percent = 0.0;
+    cpu->render_time = 0.0;
+    cpu->actual_fps = 0.0;
+
     return CPU_SUCCESS;
 }
 
@@ -1516,6 +1521,7 @@ void cpu_set_clock_frequency(cpu_6502_t *cpu, double frequency)
     pthread_mutex_lock(&cpu->pause_mutex);
     cpu->clock.frequency = frequency;
     cpu->clock.cycle_duration = 1.0 / frequency;
+    clock_reset(&cpu->clock); // Reset the clock to apply new frequency
     pthread_mutex_unlock(&cpu->pause_mutex);
 }
 

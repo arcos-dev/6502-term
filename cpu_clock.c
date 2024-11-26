@@ -81,31 +81,51 @@ void clock_wait_next_cycle(cpu_clock_t *clock)
 
     clock_platform_data_t *data = (clock_platform_data_t *)clock->platform_data;
 
-    clock->cycle_count++;
-    double expected_time = clock->cycle_count * clock->cycle_duration;
+    // Calculate the expected time for the next cycle
+    double expected_time = (clock->cycle_count + 1) * clock->cycle_duration;
     double current_time = get_current_time(data);
 
-    while (current_time < expected_time)
+    // Calculate the remaining time to wait
+    double sleep_time = expected_time - current_time;
+
+    // Ensure sleep_time is not negative
+    if (sleep_time < 0)
+        sleep_time = 0;
+
+    // Sleep for the remaining time
+    if (sleep_time > 0)
     {
-        double sleep_time = expected_time - current_time;
-        if (sleep_time > 0.001)
-        {
-            /* Sleep for a short time to yield CPU */
 #ifdef _WIN32
-            Sleep(1);
-#else
-            usleep(1000);
-#endif
+        // Convert sleep_time to milliseconds
+        DWORD sleep_ms = (DWORD)(sleep_time * 1000.0);
+        if (sleep_ms > 0)
+        {
+            Sleep(sleep_ms);
         }
         else
         {
-            /* Busy wait for precise timing */
+            // Sleep(0) yields the rest of the thread's time slice
+            Sleep(0);
         }
-
-        current_time = get_current_time(data);
+#else
+        struct timespec ts;
+        ts.tv_sec = (time_t)sleep_time;
+        ts.tv_nsec = (long)((sleep_time - ts.tv_sec) * 1e9);
+        if (ts.tv_sec > 0 || ts.tv_nsec > 0)
+        {
+            nanosleep(&ts, NULL);
+        }
+        else
+        {
+            // Yield to other threads
+            sched_yield();
+        }
+#endif
     }
 
-    clock->elapsed_time = current_time;
+    // Update elapsed time and increment the cycle count
+    clock->elapsed_time = expected_time;
+    clock->cycle_count++;
 }
 
 /* Reset the clock */

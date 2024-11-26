@@ -64,6 +64,49 @@ char current_binary_path_user[256] = "roms/hello.bin";
 /* Set the load address for the functional test binary (0x0400 or 0x0600) */
 uint16_t current_load_address_user = 0xC000;
 
+#ifdef _WIN32
+double get_current_time()
+{
+    LARGE_INTEGER frequency, current_time;
+    static LARGE_INTEGER start_time;
+    static bool initialized = false;
+
+    if (!initialized)
+    {
+        QueryPerformanceFrequency(&frequency);
+        QueryPerformanceCounter(&start_time);
+        initialized = true;
+    }
+
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&current_time);
+
+    return (double)(current_time.QuadPart - start_time.QuadPart) /
+           (double)frequency.QuadPart;
+}
+#else
+double get_current_time()
+{
+    struct timespec current_time;
+    static struct timespec start_time;
+    static bool initialized = false;
+
+    if (!initialized)
+    {
+        clock_gettime(CLOCK_MONOTONIC, &start_time);
+        initialized = true;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &current_time);
+
+    double elapsed_sec = (double)(current_time.tv_sec - start_time.tv_sec);
+    double elapsed_nsec =
+        (double)(current_time.tv_nsec - start_time.tv_nsec) / 1e9;
+
+    return elapsed_sec + elapsed_nsec;
+}
+#endif
+
 /******************************************************************************
  *                         Main Program Entry Point                           *
  ******************************************************************************/
@@ -352,6 +395,20 @@ void print_cpu_state(cpu_6502_t *cpu)
     mvwprintw(cpu_window, 5, 10, "$%02X", input_port);
     mvwprintw(cpu_window, 5, 20, "$%02X", output_port);
     mvwprintw(cpu_window, 5, 37, "%s", mnemonic);
+    wattroff(cpu_window, COLOR_PAIR(2));
+
+    // Line 6: Display Performance, Render Time, and Actual FPS
+    wattron(cpu_window, COLOR_PAIR(1) | A_DIM);
+    mvwprintw(cpu_window, 6, 2, "Performance: ");
+    mvwprintw(cpu_window, 6, 25, "Render Time: ");
+    mvwprintw(cpu_window, 6, 48, "FPS: ");
+    wattroff(cpu_window, COLOR_PAIR(1) | A_DIM);
+
+    // Display percentage and other values
+    wattron(cpu_window, COLOR_PAIR(2));
+    mvwprintw(cpu_window, 6, 15, "%.1f%%", cpu->performance_percent);
+    mvwprintw(cpu_window, 6, 38, "%.3f ms", cpu->render_time * 1000);
+    mvwprintw(cpu_window, 6, 53, "%.1f", cpu->actual_fps);
     wattroff(cpu_window, COLOR_PAIR(2));
 
     // Line 7: Emulator status
@@ -746,11 +803,34 @@ void *render_interface(void *arg)
 {
     cpu_6502_t *cpu = (cpu_6502_t *)arg;
 
+    const int render_interval_ms = 100; // Update interval in milliseconds
+    double last_render_time = get_current_time(); // Track last render time
+
     // Main rendering loop
     while (!emulator_exit)
     {
-        print_cpu_state(cpu); // Update CPU state display
-        sleep_for_fps(fps);   // Sleep to maintain FPS
+        double current_time = get_current_time();
+        double elapsed_time =
+            (current_time - last_render_time) * 1000.0; // Elapsed time in ms
+
+        if (elapsed_time >= render_interval_ms)
+        {
+            last_render_time = current_time;
+
+            // Measure render time
+            double render_start = get_current_time();
+            print_cpu_state(cpu); // Update CPU state display
+            double render_end = get_current_time();
+
+            // Update render time and FPS metrics
+            cpu->render_time = render_end - render_start;
+            cpu->actual_fps = 1000.0 / elapsed_time; // Approximate FPS
+        }
+        else
+        {
+            // Sleep for remaining time
+            usleep((render_interval_ms - elapsed_time) * 1000);
+        }
     }
 
     return NULL;
@@ -766,90 +846,86 @@ void *emulator_loop(void *arg)
 {
     cpu_6502_t *cpu = (cpu_6502_t *)arg;
 
+    uint64_t last_cycle_count =
+        cpu->clock.cycle_count;            // Track last cycle count
+    double last_time = get_current_time(); // Track last timestamp
+
     // Main emulation loop
     while (!emulator_exit)
     {
         // Check if the emulator needs to reset
         if (emulator_reset)
         {
-            // Reset the CPU and reload the program
-            pthread_mutex_lock(&lock);
-
             if (load_binary(cpu, current_binary_path_user,
                             current_load_address_user) != 0)
             {
                 fprintf(stderr, "Failed to reload binary during reset.\n");
                 emulator_exit = true;
-                pthread_mutex_unlock(&lock);
                 break;
             }
 
+            // Reset timing variables
+            last_cycle_count = cpu->clock.cycle_count;
+            last_time = get_current_time();
+            cpu->performance_percent = 0.0;
+
+            // Update control variables
             emulator_reset = false;
             emulator_paused = true;
             step_mode = false;
-
-            pthread_mutex_unlock(&lock);
         }
 
-        // Check for pause or step mode
-        if (!emulator_paused)
+        // Execute instructions if not paused or in step mode
+        if (!emulator_paused || (step_mode && step_instruction))
         {
-            // Running mode
-            pthread_mutex_lock(&lock);
-
-            // Execute the next instruction
             if (cpu_execute_instruction(cpu, NULL) != CPU_SUCCESS)
             {
                 fprintf(stderr, "Error: Invalid opcode at 0x%04X\n",
                         cpu->reg.PC);
                 emulator_exit = true;
-                pthread_mutex_unlock(&lock);
                 break;
             }
 
             // Update instruction history
             update_instruction_history(cpu->reg.PC);
 
-            pthread_mutex_unlock(&lock);
+            if (step_mode)
+            {
+                step_instruction = false; // Wait for the next step command
+            }
 
             // Wait according to clock frequency
             clock_wait_next_cycle(&cpu->clock);
-        }
-        else if (step_mode && step_instruction)
-        {
-            // Step mode
-            pthread_mutex_lock(&lock);
 
-            if (cpu_execute_instruction(cpu, NULL) != CPU_SUCCESS)
+            // Performance calculation
+            double current_time = get_current_time();
+
+            if (current_time - last_time >= 1.0)
             {
-                fprintf(stderr, "Error: Invalid opcode at 0x%04X\n",
-                        cpu->reg.PC);
-                emulator_exit = true;
-                pthread_mutex_unlock(&lock);
-                break;
+                uint64_t cycles_executed =
+                    cpu->clock.cycle_count - last_cycle_count;
+                double elapsed_time = current_time - last_time;
+                double expected_cycles = cpu->clock.frequency * elapsed_time;
+
+                if (expected_cycles > 0.0)
+                {
+                    cpu->performance_percent =
+                        (cycles_executed / expected_cycles) * 100.0;
+                }
+                else
+                {
+                    cpu->performance_percent = 0.0;
+                }
+
+                last_cycle_count = cpu->clock.cycle_count;
+                last_time = current_time;
             }
-
-            // Update instruction history
-            update_instruction_history(cpu->reg.PC);
-
-            step_instruction = false; // Wait for next step command
-
-            pthread_mutex_unlock(&lock);
-        }
-
-        // Check if the emulator should exit
-        if (emulator_exit)
-        {
-            // Exit the main loop
-            break;
         }
 
         // Small sleep to prevent high CPU usage
-        usleep(1000); // Sleep for 1 millisecond
+        usleep(100);
     }
 
-    // Ensure all resources are released before exiting
-    pthread_exit(NULL);
     return NULL;
 }
 
