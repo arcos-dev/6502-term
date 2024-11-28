@@ -1,0 +1,49 @@
+; -----------------------------------------------------------------------------
+; Program: counter_hex.asm
+; Description: A simple counting program for the 6502 CPU, which counts from
+;              0 to 15 and sends each number via the serial port at $6000.
+;              Each number is converted to its hexadecimal representation
+;              (0–9 and A–F) and sent to the serial output, followed by a newline.
+;
+; Start Address: $C000
+;
+; Compilation Instructions:
+;   Step 1: Assemble the source code into an object file:
+;       ca65 counter_hex.a65 -o counter_hex.o
+;
+;   Step 2: Link the object file with a configuration file to create a binary:
+;       ld65 -C memory.cfg counter_hex.o -o counter_hex.bin
+;
+; Requirements:
+; - 6502 Assembler (ca65)
+; - 6502 Linker (ld65)
+; - Configuration file (counter_hex.cfg) defining memory layout
+; -----------------------------------------------------------------------------
+
+        .org $C000             ; Define the start address of the program
+
+        LDX #$00               ; Load 0 into register X
+        LDY #$10               ; Load 16 into register Y (count limit)
+
+LOOP:   JSR PRINTX             ; Print the current value of X
+        INX                    ; Increment register X
+        DEY                    ; Decrement register Y
+        BNE LOOP               ; If Y != 0, jump back to LOOP
+        BRK                    ; Break the program (end execution)
+
+; Subroutine to print the hexadecimal value of X to the serial output
+PRINTX:
+        TXA                    ; Transfer X to A (Accumulator)
+        CMP #$0A               ; Compare A with 10 (decimal)
+        BCC PRINT_DIGIT        ; If A < 10, jump to PRINT_DIGIT
+
+        ; Convert values 10–15 to ASCII 'A'–'F'
+        ADC #$36               ; Add 36 to convert 10–15 to ASCII 'A'–'F'
+        JMP PRINT_CHAR         ; Skip to PRINT_CHAR
+
+PRINT_DIGIT:
+        ADC #$30               ; Add 48 (ASCII '0') to convert to ASCII digit
+
+PRINT_CHAR:
+        STA $6000              ; Store the ASCII value to the serial address
+        RTS                    ; Return from subroutine

@@ -6,7 +6,7 @@ CFLAGS = -Wall -Wextra -std=c11 -g
 TARGET = emulator
 
 # Source files
-SRCS = main.c cpu_6502.c cpu_clock.c memory.c monitored.c bus.c queue.c
+SRCS = main.c cpu_6502.c cpu_clock.c memory.c monitored.c bus.c queue.c event_queue.c
 
 # Object files (generated from source files)
 OBJS = $(SRCS:.c=.o)

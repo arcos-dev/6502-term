@@ -92,6 +92,16 @@ typedef struct
     bool debug_mode;
 } cpu_6502_t;
 
+/* Addressing Structure */
+typedef struct {
+    uint16_t address;
+    bool page_crossed;
+} effective_address_t;
+
+typedef effective_address_t (*addressing_mode_func_t)(cpu_6502_t *);
+
+typedef void (*instruction_func_t)(cpu_6502_t *, addressing_mode_func_t);
+
 /* CPU Interface Functions */
 cpu_status_t cpu_init(cpu_6502_t *cpu);
 uint8_t cpu_read(cpu_6502_t *cpu, uint16_t addr);
