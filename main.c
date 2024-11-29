@@ -256,8 +256,8 @@ int main()
  ******************************************************************************/
 
 /**
- * @brief Load a binary file into the CPU memory, set reset vector, and reset
- * CPU.
+ * @brief Load a binary file into the CPU memory, set reset vector,
+ *        and reset the CPU.
  *
  * @param cpu Pointer to the CPU structure.
  * @param path Path to the binary file.
@@ -266,16 +266,23 @@ int main()
  */
 int load_binary(cpu_6502_t *cpu, const char *path, uint16_t load_address)
 {
-    // Attempt to load the program into memory starting at the address
+    // Validate inputs
+    if (!cpu || !path)
+    {
+        fprintf(stderr, "Invalid arguments to load_binary.\n");
+        return -1;
+    }
+
+    // Attempt to load the binary into memory
     if (cpu_load_program(cpu, path, load_address) != CPU_SUCCESS)
     {
         fprintf(stderr, "Failed to load binary %s.\n", path);
-        return -1; // Indicate failure
+        return -1;
     }
 
-    // Set the reset vector to the start of the program
+    // Set the reset vector to the load address
     cpu_write(cpu, 0xFFFC, load_address & 0xFF);        // Low byte
-    cpu_write(cpu, 0xFFFD, (load_address >> 8) & 0xFF); // High byte
+    cpu_write(cpu, 0xFFFD, (load_address  >> 8) & 0xFF); // High byte
 
     // Reset the CPU to initialize the PC from the reset vector
     cpu_reset(cpu);
@@ -283,14 +290,16 @@ int load_binary(cpu_6502_t *cpu, const char *path, uint16_t load_address)
     // Clear the CPU's output queue
     queue_clear(&cpu->output_queue);
 
-    // Verify if the PC is valid after reset
-    if (cpu->reg.PC != load_address)
-    {
-        fprintf(stderr, "PC did not initialize correctly to reset vector\n");
-        return -1;
-    }
+    // Update global variables for tracking
+    strncpy(current_binary_path_user, path,
+            sizeof(current_binary_path_user) - 1);
+    current_binary_path_user[sizeof(current_binary_path_user) - 1] = '\0';
+    current_load_address_user = load_address;
 
-    return 0; // Indicate success
+    fprintf(stdout, "Binary loaded successfully: %s at 0x%04X\n", path,
+            load_address);
+
+    return 0;
 }
 
 /**
@@ -690,46 +699,87 @@ void *serial_input_thread(void *arg)
 void *serial_output_thread(void *arg)
 {
     uint8_t byte;
-    int output_x = 1, output_y = 1; // Start position after the border
+    int output_x = 1, output_y = 1; // Start position inside the border
     int max_x = SERIAL_OUTPUT_WINDOW_WIDTH - 2;
     int max_y = SERIAL_OUTPUT_WINDOW_HEIGHT - 2;
     cpu_6502_t *cpu = (cpu_6502_t *)arg;
 
-    // Main output loop
     while (!emulator_exit)
     {
-        // Dequeue bytes from the output queue and display them
+        pthread_mutex_lock(&lock); // Lock before accessing the queue
+
+        // Process bytes in the output queue
         while (queue_dequeue(&cpu->output_queue, &byte))
         {
-            pthread_mutex_lock(&lock);
-
-            // Print the character
-            mvwaddch(serial_output_window, output_y, output_x++, byte);
-
-            // Handle newline and window scrolling
-            if (byte == '\n' || output_x > max_x)
+            if (byte == '\r')
             {
+                // Carriage return: move to the start of the line
+                output_x = 1;
+            }
+            else if (byte == '\n')
+            {
+                // Newline: move to the next line
                 output_x = 1;
                 output_y++;
 
-                // Scroll the window content up
+                // Scroll the window content if we exceed the last row
                 if (output_y > max_y)
                 {
-                    wscrl(serial_output_window, 1);
                     output_y = max_y;
-                    // Clear the line where new text will be added
-                    mvwhline(serial_output_window, output_y, 1, ' ', max_x);
-                    // Redraw the border and title after scrolling
-                    box(serial_output_window, 0, 0);
-                    mvwprintw(serial_output_window, 0, 2, " Serial Output ");
+
+                    // Scroll all lines up by copying them directly
+                    for (int y = 1; y < max_y; y++)
+                    {
+                        char buffer[max_x + 1];
+                        mvwinnstr(serial_output_window, y + 1, 1, buffer,
+                                  max_x);
+                        mvwaddnstr(serial_output_window, y, 1, buffer, max_x);
+                    }
+
+                    // Clear the last line for new text
+                    mvwhline(serial_output_window, max_y, 1, ' ', max_x);
+                }
+            }
+            else
+            {
+                // Print regular characters
+                mvwaddch(serial_output_window, output_y, output_x++, byte);
+
+                // Wrap text if it exceeds the window width
+                if (output_x > max_x)
+                {
+                    output_x = 1;
+                    output_y++;
+
+                    // Scroll the window content if we exceed the last row
+                    if (output_y > max_y)
+                    {
+                        output_y = max_y;
+
+                        // Scroll all lines up
+                        for (int y = 1; y < max_y; y++)
+                        {
+                            char buffer[max_x + 1];
+                            mvwinnstr(serial_output_window, y + 1, 1, buffer,
+                                      max_x);
+                            mvwaddnstr(serial_output_window, y, 1, buffer,
+                                       max_x);
+                        }
+
+                        // Clear the last line for new text
+                        mvwhline(serial_output_window, max_y, 1, ' ', max_x);
+                    }
                 }
             }
 
+            // Refresh the window after processing each byte
             wrefresh(serial_output_window);
-            pthread_mutex_unlock(&lock);
         }
 
-        usleep(10000); // Sleep for 10ms
+        pthread_mutex_unlock(&lock); // Unlock after processing
+
+        // Sleep for a short duration to avoid busy-waiting
+        usleep(10000); // 10 ms
     }
 
     return NULL;
@@ -856,18 +906,31 @@ void *emulator_loop(void *arg)
         // Check if the emulator needs to reset
         if (emulator_reset)
         {
-            if (load_binary(cpu, current_binary_path_user,
-                            current_load_address_user) != 0)
+            // Ensure the current binary and address are valid
+            if (current_binary_path_user[0] != '\0' &&
+                current_load_address_user != 0)
             {
-                fprintf(stderr, "Failed to reload binary during reset.\n");
-                emulator_exit = true;
-                break;
-            }
+                // Reload the last loaded binary
+                if (load_binary(cpu, current_binary_path_user,
+                                current_load_address_user) != 0)
+                {
+                    fprintf(stderr, "Failed to reload binary during reset.\n");
+                    emulator_exit = true;
+                    break;
+                }
 
-            // Reset timing variables
-            last_cycle_count = cpu->clock.cycle_count;
-            last_time = get_current_time();
-            cpu->performance_percent = 0.0;
+                // Reset timing variables
+                last_cycle_count = cpu->clock.cycle_count;
+                last_time = get_current_time();
+                cpu->performance_percent = 0.0;
+
+                fprintf(stdout, "Program reset: %s at 0x%04X\n",
+                        current_binary_path_user, current_load_address_user);
+            }
+            else
+            {
+                fprintf(stderr, "No binary loaded to reset.\n");
+            }
 
             // Update control variables
             emulator_reset = false;
@@ -889,6 +952,7 @@ void *emulator_loop(void *arg)
             // Update instruction history
             update_instruction_history(cpu->reg.PC);
 
+            // Check if in step mode
             if (step_mode)
             {
                 step_instruction = false; // Wait for the next step command
@@ -900,6 +964,7 @@ void *emulator_loop(void *arg)
             // Performance calculation
             double current_time = get_current_time();
 
+            // Update performance metrics every second
             if (current_time - last_time >= 1.0)
             {
                 uint64_t cycles_executed =
@@ -907,6 +972,7 @@ void *emulator_loop(void *arg)
                 double elapsed_time = current_time - last_time;
                 double expected_cycles = cpu->clock.frequency * elapsed_time;
 
+                // Calculate performance percentage
                 if (expected_cycles > 0.0)
                 {
                     cpu->performance_percent =
@@ -973,148 +1039,103 @@ void update_instruction_history(uint16_t pc)
 }
 
 /**
- * @brief Prompt the user to enter the path of the binary to load.
+ * @brief Prompt the user to enter the path of the binary
+ *        to load and the load address.
  *
  * @param cpu Pointer to the CPU structure.
  */
 void prompt_load_binary(cpu_6502_t *cpu)
 {
-    input_paused = true; // Pause input
+    input_paused = true; // Pause input processing
 
-    // Save and hide cursor
+    // Save and hide the cursor
     int prev_cursor = curs_set(0);
 
-    // Calculate window dimensions and position
+    // Define window dimensions
     const int win_height = 8;
     const int win_width = 60;
+
+    // Calculate the central area
+    int max_cols = (COLS < 80) ? COLS : 80;
+    int area_start_x = (COLS - max_cols) / 2;
     int win_start_y = (LINES - win_height) / 2;
-    int win_start_x = ((COLS - win_width) / 2) - 15;
+    int win_start_x = (area_start_x + (max_cols - win_width) / 2) - 15;
+
+    // Ensure the window does not exceed boundaries
+    if (win_start_x < 0)
+        win_start_x = 0;
+    
+    if (win_start_y < 0)
+        win_start_y = 0;
+
+    // Lock access to the interface
+    pthread_mutex_lock(&lock);
 
     // Create the prompt window
     WINDOW *prompt_win =
         newwin(win_height, win_width, win_start_y, win_start_x);
 
+    // Unlock for other threads
     if (prompt_win == NULL)
     {
+        pthread_mutex_unlock(&lock);
         input_paused = false;
         curs_set(prev_cursor);
         return;
     }
 
-    keypad(prompt_win, TRUE); // Enable special keys
+    // Configure the window
+    keypad(prompt_win, TRUE);
     cbreak();
     noecho();
     box(prompt_win, 0, 0);
 
-    bool cancelled = false; // Flag to track cancellation
-    char path[256];
-    int ch;
+    // Display title and input field for file path
+    mvwprintw(prompt_win, 1, 2, "Enter the path to the binary file:");
+    mvwprintw(prompt_win, 2, 2, "> ");
+    wrefresh(prompt_win);
 
-    do
+    pthread_mutex_unlock(&lock); // Unlock for other threads
+
+    // Process user input for the file path
+    char path[256] = {0};
+    int ch, pos = 0;
+
+    // Read input until Enter or ESC key is pressed
+    while ((ch = wgetch(prompt_win)) != '\n' && ch != 27) // 27 = ESC key
     {
-        // Clear the path buffer
-        memset(path, 0, sizeof(path));
-        int pos = 0;
+        pthread_mutex_lock(&lock);
 
-        // Clear the window content
-        werase(prompt_win);
-        box(prompt_win, 0, 0);
-
-        // Prompt for binary path
-        mvwprintw(prompt_win, 1, 2, "Enter the path to the binary file:");
-        mvwprintw(prompt_win, 2, 2, "> ");
-        wrefresh(prompt_win);
-
-        // Read path input
-        while (1)
+        // Process the input character
+        if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
         {
-            ch = wgetch(prompt_win);
-
-            if (ch == KEY_ESC || ch == 27) // ESC key to cancel
+            if (pos > 0)
             {
-                cancelled = true;
-                break;
-            }
-            else if (ch == '\n' || ch == '\r') // Enter key to submit
-            {
+                pos--;
                 path[pos] = '\0';
-                break;
-            }
-            else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
-            {
-                if (pos > 0)
-                {
-                    pos--;
-                    path[pos] = '\0';
-                    mvwaddch(prompt_win, 2, 4 + pos, ' ');
-                    wmove(prompt_win, 2, 4 + pos);
-                    wrefresh(prompt_win);
-                }
-            }
-            else if (isprint(ch) && pos < (int)(sizeof(path) - 1))
-            {
-                path[pos++] = ch;
-                mvwaddch(prompt_win, 2, 4 + pos - 1, ch);
-                wrefresh(prompt_win);
+                mvwaddch(prompt_win, 2, 4 + pos, ' ');
+                wmove(prompt_win, 2, 4 + pos);
             }
         }
-
-        if (cancelled)
+        else if (isprint(ch) && pos < (int)(sizeof(path) - 1))
         {
-            // User cancelled
-            // Erase and refresh the window before deletion
-            werase(prompt_win);
-            wrefresh(prompt_win);
-            delwin(prompt_win);
-            curs_set(prev_cursor);
-            input_paused = false;
-
-            // Refresh main windows
-            pthread_mutex_lock(&lock);
-            touchwin(stdscr);
-            wrefresh(stdscr);
-            touchwin(cpu_window);
-            wrefresh(cpu_window);
-            touchwin(serial_output_window);
-            wrefresh(serial_output_window);
-            touchwin(serial_input_window);
-            wrefresh(serial_input_window);
-            pthread_mutex_unlock(&lock);
-
-            return;
+            path[pos++] = ch;
+            mvwaddch(prompt_win, 2, 4 + pos - 1, ch);
         }
 
-        if (path[0] == '\0')
-        {
-            // Display error message for empty path
-            mvwprintw(prompt_win, 4, 2, "Error: Binary path cannot be empty.");
-            mvwprintw(prompt_win, 5, 2,
-                      "Press any key to retry or ESC to cancel.");
-            wrefresh(prompt_win);
+        wrefresh(prompt_win);
+        pthread_mutex_unlock(&lock);
+    }
 
-            ch = wgetch(prompt_win);
-            if (ch == KEY_ESC || ch == 27)
-            {
-                cancelled = true;
-                break;
-            }
-        }
-    } while (path[0] == '\0' && !cancelled);
-
-    if (cancelled)
+    // If ESC key was pressed
+    if (ch == 27)
     {
-        // User cancelled during path input
-        // Erase and refresh the window before deletion
+        pthread_mutex_lock(&lock);
         werase(prompt_win);
         wrefresh(prompt_win);
         delwin(prompt_win);
-        curs_set(prev_cursor);
-        input_paused = false;
 
-        // Refresh main windows
-        pthread_mutex_lock(&lock);
-        touchwin(stdscr);
-        wrefresh(stdscr);
+        // Restore main windows
         touchwin(cpu_window);
         wrefresh(cpu_window);
         touchwin(serial_output_window);
@@ -1123,77 +1144,62 @@ void prompt_load_binary(cpu_6502_t *cpu)
         wrefresh(serial_input_window);
         pthread_mutex_unlock(&lock);
 
+        curs_set(prev_cursor);
+        input_paused = false;
         return;
     }
 
-    // Prompt for load address
-    // Clear the window content
+    path[pos] = '\0'; // Null-terminate the string
+
+    // Prompt for the load address
+    pthread_mutex_lock(&lock);
     werase(prompt_win);
     box(prompt_win, 0, 0);
     mvwprintw(prompt_win, 1, 2, "Enter load address (e.g., C000):");
     mvwprintw(prompt_win, 2, 2, "> ");
     wrefresh(prompt_win);
+    pthread_mutex_unlock(&lock);
 
     char address_input[16] = {0};
-    int addr_pos = 0;
-    uint16_t load_address = 0xC000; // Default address
+    pos = 0;
+    uint16_t load_address =
+        current_load_address_user; // Default to current load address
 
-    // Reset cancellation flag for the second input
-    cancelled = false;
-
-    // Read address input
-    while (1)
+    // Read input for the load address
+    while ((ch = wgetch(prompt_win)) != '\n' && ch != 27) // 27 = ESC key
     {
-        ch = wgetch(prompt_win);
+        pthread_mutex_lock(&lock);
 
-        if (ch == KEY_ESC || ch == 27) // ESC key to cancel
+        // Process the input character
+        if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
         {
-            cancelled = true;
-            break;
-        }
-        else if (ch == '\n' || ch == '\r') // Enter key to submit
-        {
-            address_input[addr_pos] = '\0';
-            if (sscanf(address_input, "%hx", &load_address) != 1)
+            if (pos > 0)
             {
-                load_address = 0xC000; // Default to 0xC000 if parsing fails
-            }
-            break;
-        }
-        else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
-        {
-            // Handle backspace
-            if (addr_pos > 0)
-            {
-                addr_pos--;
-                address_input[addr_pos] = '\0';
-                mvwaddch(prompt_win, 2, 4 + addr_pos, ' ');
-                wmove(prompt_win, 2, 4 + addr_pos);
-                wrefresh(prompt_win);
+                pos--;
+                address_input[pos] = '\0';
+                mvwaddch(prompt_win, 2, 4 + pos, ' ');
+                wmove(prompt_win, 2, 4 + pos);
             }
         }
-        else if (isxdigit(ch) && addr_pos < (int)(sizeof(address_input) - 1))
+        else if (isxdigit(ch) && pos < (int)(sizeof(address_input) - 1))
         {
-            address_input[addr_pos++] = ch;
-            mvwaddch(prompt_win, 2, 4 + addr_pos - 1, ch);
-            wrefresh(prompt_win);
+            address_input[pos++] = ch;
+            mvwaddch(prompt_win, 2, 4 + pos - 1, ch);
         }
+
+        wrefresh(prompt_win);
+        pthread_mutex_unlock(&lock);
     }
 
-    if (cancelled)
+    // If ESC key was pressed
+    if (ch == 27)
     {
-        // User cancelled during address input
-        // Erase and refresh the window before deletion
+        pthread_mutex_lock(&lock);
         werase(prompt_win);
         wrefresh(prompt_win);
         delwin(prompt_win);
-        curs_set(prev_cursor);
-        input_paused = false;
 
-        // Refresh main windows
-        pthread_mutex_lock(&lock);
-        touchwin(stdscr);
-        wrefresh(stdscr);
+        // Restore main windows
         touchwin(cpu_window);
         wrefresh(cpu_window);
         touchwin(serial_output_window);
@@ -1202,42 +1208,43 @@ void prompt_load_binary(cpu_6502_t *cpu)
         wrefresh(serial_input_window);
         pthread_mutex_unlock(&lock);
 
+        curs_set(prev_cursor);
+        input_paused = false;
         return;
     }
 
-    // Try loading the binary file and reset the CPU
+    address_input[pos] = '\0'; // Null-terminate the input string
+
+    // Parse the load address
+    if (sscanf(address_input, "%hx", &load_address) != 1)
+    {
+        load_address =
+            current_load_address_user; // Use default if parsing fails
+    }
+
+    // Attempt to load the binary
     pthread_mutex_lock(&lock);
     int load_result = load_binary(cpu, path, load_address);
     pthread_mutex_unlock(&lock);
 
+    // Display error message if loading failed
     if (load_result != 0)
     {
-        // Display error message for failed load
+        pthread_mutex_lock(&lock);
         mvwprintw(prompt_win, 4, 2, "Error: Failed to load the binary file.");
         mvwprintw(prompt_win, 5, 2, "Press any key to continue.");
         wrefresh(prompt_win);
-        wgetch(prompt_win); // Wait for a key press before closing
-    }
-    else
-    {
-        // Update current binary path and load address
-        strncpy(current_binary_path_user, path,
-                sizeof(current_binary_path_user) - 1);
-        current_load_address_user = load_address;
+        wgetch(prompt_win);
+        pthread_mutex_unlock(&lock);
     }
 
-    // Clean up and restore settings
+    // Clean up and restore the interface
+    pthread_mutex_lock(&lock);
     werase(prompt_win);
     wrefresh(prompt_win);
     delwin(prompt_win);
-    curs_set(prev_cursor);
-    nocbreak();
-    echo();
 
-    // Refresh main windows
-    pthread_mutex_lock(&lock);
-    touchwin(stdscr);
-    wrefresh(stdscr);
+    // Restore main windows
     touchwin(cpu_window);
     wrefresh(cpu_window);
     touchwin(serial_output_window);
@@ -1246,6 +1253,10 @@ void prompt_load_binary(cpu_6502_t *cpu)
     wrefresh(serial_input_window);
     pthread_mutex_unlock(&lock);
 
+    // Update the current load address
+    current_load_address_user = load_address;
+
+    curs_set(prev_cursor);
     input_paused = false;
 }
 
@@ -1258,99 +1269,137 @@ void prompt_adjust_clock(cpu_6502_t *cpu)
 {
     input_paused = true; // Pause input
 
-    // Save and hide cursor
+    // Save and hide the cursor
     int prev_cursor = curs_set(0);
 
-    // Calculate window dimensions and position
+    // Define window dimensions
     const int win_height = 8;
     const int win_width = 60;
+
+    // Calculate the central area
+    int max_cols = (COLS < 80) ? COLS : 80;
+    int area_start_x = (COLS - max_cols) / 2;
     int win_start_y = (LINES - win_height) / 2;
-    int win_start_x = ((COLS - win_width) / 2) - 15;
+    int win_start_x = (area_start_x + (max_cols - win_width) / 2) - 15;
+
+    // Ensure the window does not exceed boundaries
+    if (win_start_x < 0)
+        win_start_x = 0;
+
+    if (win_start_y < 0)
+        win_start_y = 0;
+
+    // Lock access to the interface
+    pthread_mutex_lock(&lock);
 
     // Create the prompt window
     WINDOW *prompt_win =
         newwin(win_height, win_width, win_start_y, win_start_x);
+    
+    // Unlock the interface if the window creation failed
     if (prompt_win == NULL)
     {
+        pthread_mutex_unlock(&lock);
         input_paused = false;
         curs_set(prev_cursor);
         return;
     }
 
-    keypad(prompt_win, TRUE); // Enable special keys
+    // Configure the window
+    keypad(prompt_win, TRUE);
     cbreak();
     noecho();
     box(prompt_win, 0, 0);
 
-    // Prompt for new clock speed
+    // Display prompt
     mvwprintw(prompt_win, 1, 2,
-              "Enter new clock speed in Hz (e.g., 1000000 for 1 MHz):");
+              "Enter new clock speed in Hz (e.g., 1e6 for 1 MHz):");
     mvwprintw(prompt_win, 2, 2, "> ");
     wrefresh(prompt_win);
 
+    pthread_mutex_unlock(&lock); // Unlock for other threads
+
+    // Process user input
     char input[256] = {0};
-    int ch;
-    int pos = 0;
+    int ch, pos = 0;
+    double new_clock_speed = 0.0;
 
-    // Read input
-    while (1)
+    // Read input characters
+    while ((ch = wgetch(prompt_win)) != '\n' && ch != 27) // 27 = ESC key
     {
-        ch = wgetch(prompt_win);
+        pthread_mutex_lock(&lock);
 
-        if (ch == KEY_ESC || ch == 27)
+        // Process input characters
+        if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
         {
-            break; // User cancelled
-        }
-        else if (ch == '\n' || ch == '\r')
-        {
-            input[pos] = '\0';
-            double new_clock_speed = atof(input);
-            if (new_clock_speed > 0)
-            {
-                pthread_mutex_lock(&lock);
-                cpu_set_clock_frequency(cpu, new_clock_speed);
-                pthread_mutex_unlock(&lock);
-            }
-            else
-            {
-                mvwprintw(prompt_win, 4, 2, "Invalid clock speed entered.");
-                wrefresh(prompt_win);
-                wgetch(prompt_win);
-            }
-            break;
-        }
-        else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
-        {
-            // Handle backspace
             if (pos > 0)
             {
                 pos--;
                 input[pos] = '\0';
                 mvwaddch(prompt_win, 2, 4 + pos, ' ');
                 wmove(prompt_win, 2, 4 + pos);
-                wrefresh(prompt_win);
             }
         }
         else if ((isdigit(ch) || ch == '.' || ch == 'e' || ch == 'E') &&
                  pos < (int)(sizeof(input) - 1))
         {
-            // Add character to clock speed
             input[pos++] = ch;
             mvwaddch(prompt_win, 2, 4 + pos - 1, ch);
-            wrefresh(prompt_win);
         }
+
+        wrefresh(prompt_win);
+        pthread_mutex_unlock(&lock);
     }
 
-    // Clean up and restore settings
-    delwin(prompt_win);
-    curs_set(prev_cursor);
-    nocbreak();
-    echo();
+    // If ESC key was pressed
+    if (ch == 27)
+    {
+        pthread_mutex_lock(&lock);
+        werase(prompt_win);
+        wrefresh(prompt_win);
+        delwin(prompt_win);
 
-    // Refresh main windows
+        // Restore main windows
+        touchwin(cpu_window);
+        wrefresh(cpu_window);
+        touchwin(serial_output_window);
+        wrefresh(serial_output_window);
+        touchwin(serial_input_window);
+        wrefresh(serial_input_window);
+        pthread_mutex_unlock(&lock);
+
+        curs_set(prev_cursor);
+        input_paused = false;
+        return;
+    }
+
+    input[pos] = '\0';             // Null-terminate the input string
+    new_clock_speed = atof(input); // Convert to double
+
+    // Validate the new clock speed
+    if (new_clock_speed > 0)
+    {
+        pthread_mutex_lock(&lock);
+        cpu_set_clock_frequency(cpu, new_clock_speed);
+        pthread_mutex_unlock(&lock);
+    }
+    else
+    {
+        pthread_mutex_lock(&lock);
+        mvwprintw(prompt_win, 4, 2, "Invalid clock speed entered.");
+        mvwprintw(prompt_win, 5, 2, "Press any key to continue.");
+        wrefresh(prompt_win);
+        wgetch(prompt_win);
+        pthread_mutex_unlock(&lock);
+    }
+
+    // Clean up and restore the interface
     pthread_mutex_lock(&lock);
-    touchwin(stdscr);
-    wrefresh(stdscr);
+    werase(prompt_win);
+    wrefresh(prompt_win);
+    delwin(prompt_win);
+
+    // Restore main windows
     touchwin(cpu_window);
     wrefresh(cpu_window);
     touchwin(serial_output_window);
@@ -1359,6 +1408,7 @@ void prompt_adjust_clock(cpu_6502_t *cpu)
     wrefresh(serial_input_window);
     pthread_mutex_unlock(&lock);
 
+    curs_set(prev_cursor);
     input_paused = false;
 }
 
@@ -1371,97 +1421,134 @@ void prompt_set_pc(cpu_6502_t *cpu)
 {
     input_paused = true; // Pause input
 
-    // Save and hide cursor
+    // Save and hide the cursor
     int prev_cursor = curs_set(0);
 
-    // Calculate window dimensions and position
-    const int win_height = 6;
+    // Define window dimensions
+    const int win_height = 8;
     const int win_width = 58;
+
+    // Calculate the central area
+    int max_cols = (COLS < 80) ? COLS : 80;
+    int area_start_x = (COLS - max_cols) / 2;
     int win_start_y = (LINES - win_height) / 2;
-    int win_start_x = ((COLS - win_width) / 2) - 15;
+    int win_start_x = (area_start_x + (max_cols - win_width) / 2) - 15;
+
+    // Ensure the window does not exceed boundaries
+    if (win_start_x < 0)
+        win_start_x = 0;
+
+    if (win_start_y < 0)
+        win_start_y = 0;
+
+    // Lock access to the interface
+    pthread_mutex_lock(&lock);
 
     // Create the prompt window
     WINDOW *prompt_win =
         newwin(win_height, win_width, win_start_y, win_start_x);
+
+    // Unlock the interface if the window creation failed
     if (prompt_win == NULL)
     {
+        pthread_mutex_unlock(&lock);
         input_paused = false;
         curs_set(prev_cursor);
         return;
     }
 
-    keypad(prompt_win, TRUE); // Enable special keys
+    // Configure the window
+    keypad(prompt_win, TRUE);
     cbreak();
     noecho();
     box(prompt_win, 0, 0);
 
-    // Prompt for new PC value
-    mvwprintw(prompt_win, 1, 2, "Enter the new PC value (e.g., 0400):");
+    // Display prompt
+    mvwprintw(prompt_win, 1, 2, "Enter the new PC value (e.g., C000):");
     mvwprintw(prompt_win, 2, 2, "> ");
     wrefresh(prompt_win);
 
+    pthread_mutex_unlock(&lock); // Unlock for other threads
+
+    // Process user input
     char input[16] = {0};
-    int ch;
-    int pos = 0;
-    uint16_t new_pc = cpu->reg.PC; // Default is current PC
+    int ch, pos = 0;
+    uint16_t new_pc = cpu->reg.PC; // Use the initial PC value from the CPU
 
-    while (1)
+    // Read input characters
+    while ((ch = wgetch(prompt_win)) != '\n' && ch != 27) // 27 = ESC key
     {
-        ch = wgetch(prompt_win);
+        pthread_mutex_lock(&lock);
 
-        if (ch == KEY_ESC || ch == 27)
+        // Process input characters
+        if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
         {
-            break; // User cancelled
-        }
-        else if (ch == '\n' || ch == '\r')
-        {
-            input[pos] = '\0';
-            if (sscanf(input, "%hx", &new_pc) != 1)
-            {
-                mvwprintw(prompt_win, 4, 2, "Invalid PC value.");
-                wrefresh(prompt_win);
-                wgetch(prompt_win);
-                break;
-            }
-            else
-            {
-                pthread_mutex_lock(&lock);
-                cpu->reg.PC = new_pc;
-                pthread_mutex_unlock(&lock);
-                break;
-            }
-        }
-        else if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
-        {
-            // Handle backspace
             if (pos > 0)
             {
                 pos--;
                 input[pos] = '\0';
                 mvwaddch(prompt_win, 2, 4 + pos, ' ');
                 wmove(prompt_win, 2, 4 + pos);
-                wrefresh(prompt_win);
             }
         }
         else if (isxdigit(ch) && pos < (int)(sizeof(input) - 1))
         {
-            // Add character to address
             input[pos++] = ch;
             mvwaddch(prompt_win, 2, 4 + pos - 1, ch);
-            wrefresh(prompt_win);
         }
+
+        wrefresh(prompt_win);
+        pthread_mutex_unlock(&lock);
     }
 
-    // Clean up and restore settings
-    delwin(prompt_win);
-    curs_set(prev_cursor);
-    nocbreak();
-    echo();
+    // If ESC key was pressed
+    if (ch == 27)
+    {
+        pthread_mutex_lock(&lock);
+        werase(prompt_win);
+        wrefresh(prompt_win);
+        delwin(prompt_win);
 
-    // Update main windows
+        // Restore main windows
+        touchwin(cpu_window);
+        wrefresh(cpu_window);
+        touchwin(serial_output_window);
+        wrefresh(serial_output_window);
+        touchwin(serial_input_window);
+        wrefresh(serial_input_window);
+        pthread_mutex_unlock(&lock);
+
+        curs_set(prev_cursor);
+        input_paused = false;
+        return;
+    }
+
+    input[pos] = '\0'; // Null-terminate the input string
+
+    // Convert input to hexadecimal and set PC
+    if (sscanf(input, "%hx", &new_pc) == 1)
+    {
+        pthread_mutex_lock(&lock);
+        cpu->reg.PC = new_pc; // Update the Program Counter in the CPU
+        pthread_mutex_unlock(&lock);
+    }
+    else
+    {
+        pthread_mutex_lock(&lock);
+        mvwprintw(prompt_win, 4, 2, "Invalid PC value.");
+        mvwprintw(prompt_win, 5, 2, "Press any key to continue.");
+        wrefresh(prompt_win);
+        wgetch(prompt_win);
+        pthread_mutex_unlock(&lock);
+    }
+
+    // Clean up and restore the interface
     pthread_mutex_lock(&lock);
-    touchwin(stdscr);
-    wrefresh(stdscr);
+    werase(prompt_win);
+    wrefresh(prompt_win);
+    delwin(prompt_win);
+
+    // Restore main windows
     touchwin(cpu_window);
     wrefresh(cpu_window);
     touchwin(serial_output_window);
@@ -1470,74 +1557,107 @@ void prompt_set_pc(cpu_6502_t *cpu)
     wrefresh(serial_input_window);
     pthread_mutex_unlock(&lock);
 
+    curs_set(prev_cursor);
     input_paused = false;
 }
 
 /**
- * @brief Display the help menu with key assignments.
+ * @brief Display the help menu with key assignments in two columns.
  */
 void display_help_menu(void)
 {
     input_paused = true; // Pause input
 
-    // Get dimensions of the serial output and input region
-    int start_y = CPU_WINDOW_HEIGHT;
-    int region_height =
-        SERIAL_OUTPUT_WINDOW_HEIGHT + SERIAL_INPUT_WINDOW_HEIGHT;
+    // Define window dimensions
+    int win_height = 8; // Reduced height
+    int win_width = 60; // Increased width for two columns
 
-    // Ensure the width does not exceed the region width
-    const int win_height = 13;
-    const int win_width = 48;
-    int win_start_y = start_y + (region_height - win_height) / 2;
-    int win_start_x = ((COLS - win_width) / 2) - 15;
+    // Calculate the central area
+    int max_cols = (COLS < 80) ? COLS : 80;
+    int area_start_x = (COLS - max_cols) / 2;
+    int win_start_y = (LINES - win_height) / 2;
+    int win_start_x = (area_start_x + (max_cols - win_width) / 2) - 15;
 
-    // Create a help window
+    // Adjust dimensions if the terminal is too small
+    if (win_width > COLS)
+        win_width = COLS - 2;
+
+    if (win_height > LINES)
+        win_height = LINES - 2;
+
+    // Ensure the window does not exceed boundaries
+    if (win_start_x < 0)
+        win_start_x = 0;
+
+    if (win_start_y < 0)
+        win_start_y = 0;
+
+    // Lock access to the interface
+    pthread_mutex_lock(&lock);
+
+    // Create the help window
     WINDOW *help_win = newwin(win_height, win_width, win_start_y, win_start_x);
+
+    // Unlock the interface if the window creation failed
+    if (help_win == NULL)
+    {
+        pthread_mutex_unlock(&lock);
+        input_paused = false;
+        return;
+    }
+
+    // Configure the window
     keypad(help_win, TRUE);
     cbreak();
     noecho();
     box(help_win, 0, 0);
-    mvwprintw(help_win, 1,  2, "Help Menu:");
-    mvwprintw(help_win, 3,  2, "F1  - Help");
-    mvwprintw(help_win, 4,  2, "F2  - Run/Pause");
-    mvwprintw(help_win, 5,  2, "F3  - Load New Binary");
-    mvwprintw(help_win, 6,  2, "F4  - Adjust CPU Clock Speed");
-    mvwprintw(help_win, 7,  2, "F5  - Reset Emulator");
-    mvwprintw(help_win, 8,  2, "F6  - Set PC Value");
-    mvwprintw(help_win, 9,  2, "F7  - Step Instruction");
-    mvwprintw(help_win, 10, 2, "F10 - Quit Emulator");
-    mvwprintw(help_win, 11, 2, "Press ESC to return.");
+
+    // Display help menu content in two columns
+    mvwprintw(help_win, 1, 2, "Help Menu:");
+    mvwprintw(help_win, 2, 2, "F1  - Help");
+    mvwprintw(help_win, 3, 2, "F2  - Run/Pause");
+    mvwprintw(help_win, 4, 2, "F3  - Load Binary");
+    mvwprintw(help_win, 5, 2, "F4  - Adjust Clock");
+
+    mvwprintw(help_win, 2, 32, "F5  - Reset Emulator");
+    mvwprintw(help_win, 3, 32, "F6  - Set PC");
+    mvwprintw(help_win, 4, 32, "F7  - Step");
+    mvwprintw(help_win, 5, 32, "F10 - Quit Emulator");
+
+    mvwprintw(help_win, 6, 2, "Press ESC to return.");
     wrefresh(help_win);
 
-    // Hide cursor during help display
-    curs_set(0);
+    pthread_mutex_unlock(&lock); // Unlock for other threads
 
     int ch;
 
-    // Wait for ESC key
-    while ((ch = wgetch(help_win)) != KEY_ESC && ch != 27)
+    // Wait for ESC key to close the help menu
+    while (1)
     {
-        // Wait for ESC key
+        pthread_mutex_lock(&lock);
+        ch = wgetch(help_win);
+        pthread_mutex_unlock(&lock);
+
+        if (ch == KEY_ESC || ch == 27) // ESC key to close
+        {
+            break;
+        }
     }
 
-    // Restore cursor visibility
-    curs_set(1);
+    // Clean up the help window
+    pthread_mutex_lock(&lock);
+    werase(help_win);
+    wrefresh(help_win);
     delwin(help_win);
 
-    // Restore terminal settings
-    nocbreak();
-    echo();
-
-    // Redraw main windows
-    pthread_mutex_lock(&lock);
-    touchwin(stdscr);
-    wrefresh(stdscr);
+    // Force the redraw of the main windows to restore content
     touchwin(cpu_window);
     wrefresh(cpu_window);
     touchwin(serial_output_window);
     wrefresh(serial_output_window);
     touchwin(serial_input_window);
     wrefresh(serial_input_window);
+
     pthread_mutex_unlock(&lock);
 
     input_paused = false; // Resume input
