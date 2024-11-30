@@ -18,11 +18,11 @@
  *                            Core Header Includes                            *
  ******************************************************************************/
 
-#include "cpu_6502.h"  // CPU emulation
 #include "bus.h"       // Bus system
-#include "queue.h"     // Input/output queues
+#include "cpu_6502.h"  // CPU emulation
 #include "memory.h"    // Memory management
 #include "monitored.h" // Monitored memory
+#include "queue.h"     // Input/output queues
 
 /******************************************************************************
  *                             Macro Definitions                              *
@@ -78,6 +78,14 @@ extern int fps;
 /* Current Binary Configuration */
 extern char current_binary_path_user[256];
 extern uint16_t current_load_address_user;
+
+typedef enum
+{
+    ALPHANUMERIC = 1,
+    NUMERIC,
+    HEXADECIMAL,
+    FLOATING_POINT
+} InputType;
 
 /******************************************************************************
  *                             Opcodes Constants                              *
@@ -256,9 +264,74 @@ const char *opcode_to_mnemonic(uint8_t opcode)
     return opcode_mnemonics[opcode] ? opcode_mnemonics[opcode] : "UNKNOWN";
 }
 
-/******************************************************************************
- *                            Function Prototypes                             *
- ******************************************************************************/
+/**
+ * @brief Sleep for a number of milliseconds to maintain FPS.
+ *
+ * @param fps The number of frames per second.
+ */
+void sleep_for_fps(int fps);
+
+/**
+ * @brief Create a new window with a box and title.
+ *
+ * @param height Window height.
+ * @param width Window width.
+ * @param starty Starting y-coordinate.
+ * @param startx Starting x-coordinate.
+ * @param title Title of the window.
+ * @return WINDOW* Pointer to the new window.
+ */
+WINDOW *create_window_with_box_and_title(int height, int width, int starty,
+                                         int startx, const char *title);
+
+/**
+ * @brief Lock the interface mutex.
+ */
+void lock_interface(void);
+
+/**
+ * @brief Unlock the interface mutex.
+ */
+void unlock_interface(void);
+
+/**
+ * @brief General function to handle user input in prompt windows.
+ *
+ * @param prompt_win Pointer to the prompt window.
+ * @param input_buffer Buffer to store user input.
+ * @param buffer_size Size of the input buffer.
+ * @param input_type Type of input expected (e.g., ALPHANUMERIC, NUMERIC).
+ * @return int The last character entered (to detect if ESC was pressed).
+ */
+int handle_user_input(WINDOW *prompt_win, char *input_buffer,
+                      size_t buffer_size, int input_type);
+
+/**
+ * @brief Clean up the prompt window and restore the main interface.
+ *
+ * @param prompt_win Pointer to the prompt window.
+ */
+void cleanup_prompt_window(WINDOW *prompt_win);
+
+/**
+ * @brief General function to display prompt windows.
+ *
+ * @param prompt_title Title of the prompt window.
+ * @param prompt_message Message to display.
+ * @param input_type Type of input expected.
+ * @param input_buffer Buffer to store user input.
+ * @param buffer_size Size of the input buffer.
+ * @return int The last character entered (to detect if ESC was pressed).
+ */
+int display_prompt(const char *prompt_title, const char *prompt_message,
+                   int input_type, char *input_buffer, size_t buffer_size);
+
+/**
+ * @brief Get the current time in seconds.
+ *
+ * @return double Current time in seconds.
+ */
+double get_current_time(void);
 
 /**
  * @brief Display the CPU state in the CPU window.
@@ -352,7 +425,6 @@ void update_instruction_history(uint16_t pc);
  * @param cpu Pointer to the CPU structure.
  * @param path Path to the binary file.
  * @param load_address Address where the binary will be loaded.
- * @param reset_address Address where the binary will be reseted.
  * @return int 0 on success, -1 on failure.
  */
 int load_binary(cpu_6502_t *cpu, const char *path, uint16_t load_address);
@@ -382,13 +454,6 @@ void prompt_set_pc(cpu_6502_t *cpu);
  * @brief Display the help menu with key assignments.
  */
 void display_help_menu(void);
-
-/**
- * @brief Sleep for a number of milliseconds to maintain FPS.
- *
- * @param fps The number of frames per second.
- */
-void sleep_for_fps(int fps);
 
 /**
  * @brief Retrieve the mnemonic for a given opcode.
