@@ -191,36 +191,37 @@ int handle_user_input(WINDOW *prompt_win, char *input_buffer,
     // Clear the input buffer
     while ((ch = wgetch(prompt_win)) != '\n' && ch != 27) // 27 = ESC key
     {
-        lock_interface();
-
-        // Handle special keys
+        // Handle backspace key
         if (ch == KEY_BACKSPACE || ch == 127 || ch == '\b')
         {
+            // Move the cursor back and erase the character
             if (pos > 0)
             {
                 pos--;
                 input_buffer[pos] = '\0';
-                mvwaddch(prompt_win, 2, 4 + pos, ' ');
-                wmove(prompt_win, 2, 4 + pos);
+                mvwaddch(prompt_win, getcury(prompt_win),
+                         getcurx(prompt_win) - 1, ' ');
+                wmove(prompt_win, getcury(prompt_win), getcurx(prompt_win) - 1);
             }
         }
-        // Handle printable characters based on input type
-        else if ((input_type == ALPHANUMERIC && isprint(ch)) ||
-                 (input_type == NUMERIC && isdigit(ch)) ||
+        // Handle other printable characters based on input type
+        else if ((input_type == NUMERIC && isdigit(ch)) ||
                  (input_type == HEXADECIMAL && isxdigit(ch)) ||
                  (input_type == FLOATING_POINT &&
-                  (isdigit(ch) || ch == '.' || ch == 'e' || ch == 'E')))
+                  (isdigit(ch) || ch == '.' || ch == 'e' || ch == 'E')) ||
+                 (input_type == ALPHANUMERIC && isprint(ch)))
         {
-            // Check if there is space in the buffer
+            // Add the character to the buffer
             if (pos < (int)(buffer_size - 1))
             {
                 input_buffer[pos++] = ch;
-                mvwaddch(prompt_win, 2, 4 + pos - 1, ch);
+                input_buffer[pos] = '\0';
+                mvwaddch(prompt_win, getcury(prompt_win), getcurx(prompt_win),
+                         ch);
             }
         }
 
         wrefresh(prompt_win);
-        unlock_interface();
     }
 
     input_buffer[pos] = '\0'; // Null-terminate the string
@@ -256,7 +257,7 @@ void cleanup_prompt_window(WINDOW *prompt_win)
  * @param prompt_title Title of the prompt window.
  * @param prompt_message Message to display.
  * @param input_type Type of input expected.
- * @param input_buffer Buffer to store user input.
+ * @param input_buffer Buffer to store user input (can be NULL for no input).
  * @param buffer_size Size of the input buffer.
  * @return int The last character entered (to detect if ESC was pressed).
  */
@@ -266,22 +267,38 @@ int display_prompt(const char *prompt_title, const char *prompt_message,
     // Save and hide the cursor
     int prev_cursor = curs_set(0);
 
-    // Define window dimensions
-    const int win_height = 8;
-    const int win_width = 60;
+    // Calculate the number of lines in the message
+    int message_lines = 0;
+    const char *ptr = prompt_message;
 
-    // Calculate the central area
-    int max_cols = (COLS < 80) ? COLS : 80;
-    int area_start_x = (COLS - max_cols) / 2;
+    // Count the number of lines in the message
+    while (*ptr)
+    {
+        // Count newlines as separate lines
+        if (*ptr == '\n')
+            message_lines++;
+
+        // Move to the next character
+        ptr++;
+    }
+
+    message_lines++; // Include the last line
+
+    // Calculate window dimensions dynamically
+    const int padding = 2; // Space for borders and title
+    int win_height = message_lines + padding + (input_buffer != NULL ? 1 : 0);
+    int win_width = 54; // Fixed width for prompt windows
+
+    // Ensure the window fits within terminal bounds
+    if (win_height > LINES)
+        win_height = LINES - 2;
+
+    if (win_width > COLS)
+        win_width = COLS - 2;
+
+    // Calculate the central position for the window
     int win_start_y = (LINES - win_height) / 2;
-    int win_start_x = (area_start_x + (max_cols - win_width) / 2) - 15;
-
-    // Ensure the window does not exceed boundaries
-    if (win_start_x < 0)
-        win_start_x = 0;
-
-    if (win_start_y < 0)
-        win_start_y = 0;
+    int win_start_x = ((COLS - win_width) / 2) - 15;
 
     lock_interface();
     WINDOW *prompt_win =
@@ -305,19 +322,57 @@ int display_prompt(const char *prompt_title, const char *prompt_message,
     if (prompt_title)
     {
         wattron(prompt_win, A_BOLD);
-        mvwprintw(prompt_win, 0, ((win_width - strlen(prompt_title)) / 2) - 1, " %s ",
-                  prompt_title);
+        mvwprintw(prompt_win, 0, ((win_width - strlen(prompt_title)) / 2) - 1,
+                  " %s ", prompt_title);
         wattroff(prompt_win, A_BOLD);
     }
 
-    mvwprintw(prompt_win, 1, 2, "%s", prompt_message);
-    mvwprintw(prompt_win, 2, 2, "> ");
-    wrefresh(prompt_win);
+    // Display the multi-line message
+    int current_line = 1;
+    ptr = prompt_message;
+
+    // Print each line of the message
+    while (*ptr)
+    {
+        const char *line_start = ptr;
+
+        // Find the end of the line
+        while (*ptr && *ptr != '\n')
+            ptr++;
+        
+        // Print the line
+        mvwprintw(prompt_win, current_line++, 2, "%.*s",
+                  (int)(ptr - line_start), line_start);
+
+        // Skip the newline character
+        if (*ptr == '\n')
+            ptr++;
+    }
+
+    // Show input prompt below the message
+    if (input_buffer != NULL)
+    {
+        mvwprintw(prompt_win, current_line++, 2, "> ");
+        wrefresh(prompt_win);
+    }
+
     unlock_interface();
 
     // Handle user input
-    int ch =
-        handle_user_input(prompt_win, input_buffer, buffer_size, input_type);
+    int ch = ERR;
+
+    // Wait for user input if an input buffer is provided
+    if (input_buffer != NULL)
+    {
+        wmove(prompt_win, current_line - 1, 4); // Move cursor to input line
+        ch = handle_user_input(prompt_win, input_buffer, buffer_size,
+                               input_type);
+    }
+    else
+    {
+        // Wait for a key press if no input is expected
+        ch = wgetch(prompt_win);
+    }
 
     // Clean up and restore the interface
     cleanup_prompt_window(prompt_win);
@@ -1260,7 +1315,7 @@ void prompt_load_binary(cpu_6502_t *cpu)
 {
     input_paused = true; // Pause input processing
 
-    char path[256] = {0};
+    char path[48] = {0};
     int ch = display_prompt("Load Binary",
                             "Enter the path to the binary file:", ALPHANUMERIC,
                             path, sizeof(path));
@@ -1283,6 +1338,8 @@ void prompt_load_binary(cpu_6502_t *cpu)
     }
 
     uint16_t load_address = current_load_address_user;
+
+    // Parse the input to get the load address
     if (sscanf(address_input, "%hx", &load_address) != 1)
     {
         load_address =
@@ -1298,11 +1355,10 @@ void prompt_load_binary(cpu_6502_t *cpu)
     if (load_result != 0)
     {
         // Display error message
-        char dummy_input[1];
         display_prompt(
             "Error",
             "Failed to load the binary file.\nPress any key to continue.",
-            ALPHANUMERIC, dummy_input, sizeof(dummy_input));
+            ALPHANUMERIC, NULL, 0);
     }
 
     current_load_address_user = load_address;
@@ -1318,7 +1374,7 @@ void prompt_adjust_clock(cpu_6502_t *cpu)
 {
     input_paused = true; // Pause input
 
-    char input[256] = {0};
+    char input[32] = {0};
     int ch = display_prompt(
         "Adjust Clock",
         "Enter new clock speed in Hz (1e6 for 1 MHz):", FLOATING_POINT,
@@ -1342,10 +1398,9 @@ void prompt_adjust_clock(cpu_6502_t *cpu)
     else
     {
         // Display error message
-        char dummy_input[1];
         display_prompt(
             "Error", "Invalid clock speed entered.\nPress any key to continue.",
-            ALPHANUMERIC, dummy_input, sizeof(dummy_input));
+            ALPHANUMERIC, NULL, 0);
     }
 
     input_paused = false;
@@ -1384,9 +1439,8 @@ void prompt_set_pc(cpu_6502_t *cpu)
     else
     {
         // Display error message
-        char dummy_input[1];
         display_prompt("Error", "Invalid PC value.\nPress any key to continue.",
-                       ALPHANUMERIC, dummy_input, sizeof(dummy_input));
+                       ALPHANUMERIC, NULL, 0);
     }
 
     input_paused = false;
@@ -1399,16 +1453,16 @@ void display_help_menu(void)
 {
     input_paused = true; // Pause input
 
-    char dummy_input[1];
+    // Help menu message
+    const char *help_message =
+        "F1  - Help                    F5  - Reset Emulator\n"
+        "F2  - Run/Pause               F6  - Set PC\n"
+        "F3  - Load Binary             F7  - Step\n"
+        "F4  - Adjust Clock            F10 - Quit Emulator\n\n"
+        "Press any key to return.";
 
-    // Display the help menu with key assignments
-    display_prompt("Help Menu",
-                   "F1  - Help                        F5  - Reset Emulator\n"
-                   "F2  - Run/Pause                   F6  - Set PC\n"
-                   "F3  - Load Binary                 F7  - Step\n"
-                   "F4  - Adjust Clock                F10 - Quit Emulator\n"
-                   "Press ESC to return.",
-                   ALPHANUMERIC, dummy_input, sizeof(dummy_input));
+    // Display the help menu without input handling
+    display_prompt("Help Menu", help_message, ALPHANUMERIC, NULL, 0);
 
     input_paused = false; // Resume input
 }
