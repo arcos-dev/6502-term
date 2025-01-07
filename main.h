@@ -32,11 +32,19 @@
 #define CPU_WINDOW_HEIGHT 10
 #define CPU_WINDOW_WIDTH 80
 
-#define SERIAL_OUTPUT_WINDOW_HEIGHT 10
+#define MEMORY_WINDOW_HEIGHT 10
+#define MEMORY_WINDOW_WIDTH 80
+
+#define SERIAL_OUTPUT_WINDOW_HEIGHT 5
 #define SERIAL_OUTPUT_WINDOW_WIDTH 80
 
 #define SERIAL_INPUT_WINDOW_HEIGHT 5
 #define SERIAL_INPUT_WINDOW_WIDTH 80
+
+// We will display 128 bytes per page, each line with 16 bytes and 8 lines
+#define BYTES_PER_PAGE   128
+#define BYTES_PER_LINE   16
+#define MEMORY_LINES     8   // Because 8 lines * 16 bytes = 128
 
 /* Emulation parameters */
 #define DEFAULT_FPS 10
@@ -339,6 +347,16 @@ double get_current_time(void);
  * @param cpu Pointer to the CPU structure.
  */
 void print_cpu_state(cpu_6502_t *cpu);
+
+/**
+ * @brief Display 8 lines of memory with 16 bytes each, starting at start_addr.
+ * Example format:
+ *   F000:00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+ *
+ * @param cpu Pointer to the CPU structure.
+ * @param start_addr Memory address.
+ */
+void print_memory_contents(cpu_6502_t *cpu, uint16_t start_addr);
 
 /**
  * @brief Thread function for handling serial input and key events.

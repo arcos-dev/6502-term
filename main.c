@@ -35,6 +35,7 @@
 
 /* UI Windows */
 WINDOW *cpu_window;
+WINDOW *memory_window;
 WINDOW *serial_output_window;
 WINDOW *serial_input_window;
 
@@ -63,6 +64,9 @@ char current_binary_path_user[256] = "roms/hello.bin";
 
 /* Set the load address for the functional test binary (0x0400 or 0x0600) */
 uint16_t current_load_address_user = 0xC000;
+
+// Tracks which 128-byte "page" we are showing in the Memory Window
+static uint16_t memory_view_page = 0;
 
 /******************************************************************************
  *                              Timer Functions                               *
@@ -244,6 +248,8 @@ void cleanup_prompt_window(WINDOW *prompt_win)
     // Restore main windows
     touchwin(cpu_window);
     wrefresh(cpu_window);
+    touchwin(memory_window);
+    wrefresh(memory_window);
     touchwin(serial_output_window);
     wrefresh(serial_output_window);
     touchwin(serial_input_window);
@@ -339,7 +345,7 @@ int display_prompt(const char *prompt_title, const char *prompt_message,
         // Find the end of the line
         while (*ptr && *ptr != '\n')
             ptr++;
-        
+
         // Print the line
         mvwprintw(prompt_win, current_line++, 2, "%.*s",
                   (int)(ptr - line_start), line_start);
@@ -403,15 +409,37 @@ int main()
     keypad(stdscr, TRUE); // Enable function keys
     curs_set(0);          // Hide the cursor
 
-    // Setup windows for CPU, Serial Output, and Serial Input
+    // Create the CPU Window
     cpu_window = create_window_with_box_and_title(
-        CPU_WINDOW_HEIGHT, CPU_WINDOW_WIDTH, 0, 0, "CPU State");
+        CPU_WINDOW_HEIGHT,
+        CPU_WINDOW_WIDTH,
+        0,
+        0,
+        "CPU State");
+
+    // Create the Memory Window to the right of the CPU Window
+    memory_window = create_window_with_box_and_title(
+        MEMORY_WINDOW_HEIGHT,
+        MEMORY_WINDOW_WIDTH,
+        CPU_WINDOW_HEIGHT,
+        0, // Start at the below of CPU Window
+        "Memory View");
+
+    // Create a Serial Window below CPU+Memory
     serial_output_window = create_window_with_box_and_title(
-        SERIAL_OUTPUT_WINDOW_HEIGHT, SERIAL_OUTPUT_WINDOW_WIDTH,
-        CPU_WINDOW_HEIGHT, 0, "Serial Output");
+        SERIAL_OUTPUT_WINDOW_HEIGHT,
+        SERIAL_OUTPUT_WINDOW_WIDTH,
+        MEMORY_WINDOW_HEIGHT + MEMORY_WINDOW_HEIGHT,
+        0,
+        "Serial Output");
+
     serial_input_window = create_window_with_box_and_title(
-        SERIAL_INPUT_WINDOW_HEIGHT, SERIAL_INPUT_WINDOW_WIDTH,
-        CPU_WINDOW_HEIGHT + SERIAL_OUTPUT_WINDOW_HEIGHT, 0, "Serial Input");
+        SERIAL_INPUT_WINDOW_HEIGHT,
+        SERIAL_INPUT_WINDOW_WIDTH,
+        MEMORY_WINDOW_HEIGHT + MEMORY_WINDOW_HEIGHT +
+            SERIAL_OUTPUT_WINDOW_HEIGHT,
+        0,
+        "Serial Input");
 
     // Configure input timeout for the serial input window
     wtimeout(serial_input_window, 100);
@@ -729,6 +757,45 @@ void print_cpu_state(cpu_6502_t *cpu)
     // Refresh the window to apply changes
     wrefresh(cpu_window);
     unlock_interface(); // Unlock after update
+}
+
+/**
+ * @brief Display 8 lines of memory with 16 bytes each, starting at start_addr.
+ * Example format:
+ *   F000:00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+ */
+void print_memory_contents(cpu_6502_t *cpu, uint16_t start_addr)
+{
+    lock_interface();
+    werase(memory_window);
+    box(memory_window, 0, 0);
+    mvwprintw(memory_window, 0, 2, " Memory View ");
+
+    // Print 8 lines of 16 bytes each => 128 bytes total
+    for (int line = 0; line < MEMORY_LINES; line++)
+    {
+        // 'line * BYTES_PER_LINE' will step in increments of 16
+        uint16_t addr_line = start_addr + (line * BYTES_PER_LINE);
+        mvwprintw(memory_window, line + 1, 2, "%04X:", addr_line);
+        int col_x = 7;
+
+        for (int b = 0; b < BYTES_PER_LINE; b++)
+        {
+            uint8_t value = bus_read(cpu->bus, addr_line + b);
+            mvwprintw(memory_window, line + 1, col_x, "%02X", value);
+
+            col_x += 2;
+
+            if (b < BYTES_PER_LINE - 1)
+            {
+                mvwaddch(memory_window, line + 1, col_x, ',');
+                col_x += 1;
+            }
+        }
+    }
+
+    wrefresh(memory_window);
+    unlock_interface();
 }
 
 /**
@@ -1135,7 +1202,16 @@ void *render_interface(void *arg)
 
             // Measure render time
             double render_start = get_current_time();
-            print_cpu_state(cpu); // Update CPU state display
+
+            // Update CPU state display
+            print_cpu_state(cpu);
+
+            // Calculate memory_start_addr from memory_view_page
+            uint16_t memory_start_addr = memory_view_page * BYTES_PER_PAGE;
+
+            // Update Memory window
+            print_memory_contents(cpu, memory_start_addr);
+
             double render_end = get_current_time();
 
             // Update render time and FPS metrics
@@ -1166,7 +1242,8 @@ void *emulator_loop(void *arg)
         cpu->clock.cycle_count;            // Track last cycle count
     double last_time = get_current_time(); // Track last timestamp
 
-    // Main emulation loop
+    // We'll track the block number that the PC is in so if PC is e.g. 200,
+    // that's in block 1 if block size=128; because 200/128 = 1
     while (!emulator_exit)
     {
         // Check if the emulator needs to reset
@@ -1198,6 +1275,9 @@ void *emulator_loop(void *arg)
                 fprintf(stderr, "No binary loaded to reset.\n");
             }
 
+            // Also reset the memory_view_page to 0
+            memory_view_page = 0;
+
             // Update control variables
             emulator_reset = false;
             emulator_paused = true;
@@ -1227,6 +1307,24 @@ void *emulator_loop(void *arg)
 
             // Wait according to clock frequency
             clock_wait_next_cycle(&cpu->clock);
+
+            // ================================================================
+            // NEW: Adjust memory_view_page so that
+            // if PC is in block X, we show that block
+            // ================================================================
+            uint16_t pc = cpu->reg.PC;
+            uint16_t new_page = pc / BYTES_PER_PAGE;
+
+            // If PC moved to a new block (e.g. from 0..127 into 128..255),
+            // we update memory_view_page
+            if (new_page != memory_view_page)
+            {
+                memory_view_page = new_page;
+                // If we go beyond 0xFFFF / 128 => wrap to 0
+                if (memory_view_page * BYTES_PER_PAGE > 0xFFFF)
+                    memory_view_page = 0;
+            }
+            // ================================================================
 
             // Performance calculation
             double current_time = get_current_time();
@@ -1273,6 +1371,7 @@ void cleanup(cpu_6502_t *cpu, memory_t *ram, bus_t *bus)
 {
     // Delete the windows and end curses mode
     delwin(cpu_window);
+    delwin(memory_window);
     delwin(serial_output_window);
     delwin(serial_input_window);
     endwin();
