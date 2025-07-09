@@ -98,6 +98,7 @@ void clock_wait_next_cycle(cpu_clock_t *clock)
 #ifdef _WIN32
         // Convert sleep_time to milliseconds
         DWORD sleep_ms = (DWORD)(sleep_time * 1000.0);
+
         if (sleep_ms > 0)
         {
             Sleep(sleep_ms);
@@ -109,8 +110,10 @@ void clock_wait_next_cycle(cpu_clock_t *clock)
         }
 #else
         struct timespec ts;
+
         ts.tv_sec = (time_t)sleep_time;
         ts.tv_nsec = (long)((sleep_time - ts.tv_sec) * 1e9);
+
         if (ts.tv_sec > 0 || ts.tv_nsec > 0)
         {
             nanosleep(&ts, NULL);

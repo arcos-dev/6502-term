@@ -122,4 +122,26 @@ void cpu_inject_NMI(cpu_6502_t *cpu);
 void cpu_pause(cpu_6502_t *cpu);
 void cpu_resume(cpu_6502_t *cpu);
 
+// Funções utilitárias para testes e manipulação de flags
+static inline void set_flag(cpu_6502_t *cpu, status_flag_t flag, bool value) {
+    if (value)
+        cpu->reg.P |= (1 << flag);
+    else
+        cpu->reg.P &= ~(1 << flag);
+}
+
+static inline bool get_flag(const cpu_6502_t *cpu, status_flag_t flag) {
+    return (cpu->reg.P >> flag) & 1;
+}
+
+static inline void update_zero_and_negative_flags(cpu_6502_t *cpu, uint8_t value) {
+    set_flag(cpu, FLAG_ZERO, value == 0);
+    set_flag(cpu, FLAG_NEGATIVE, (value & 0x80) != 0);
+}
+
+// Funções de breakpoint
+void breakpoint_init(breakpoint_t *bp);
+bool breakpoint_add(breakpoint_t *bp, uint16_t addr);
+bool breakpoint_check(breakpoint_t *bp, uint16_t addr);
+
 #endif /* CPU_6502_H */

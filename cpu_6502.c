@@ -89,28 +89,6 @@ static inline uint16_t pull_word(cpu_6502_t *cpu)
     return low | (high << 8);
 }
 
-/* Get and Set Status Flags */
-static inline bool get_flag(const cpu_6502_t *cpu, status_flag_t flag)
-{
-    return (cpu->reg.P >> flag) & 1;
-}
-
-static inline void set_flag(cpu_6502_t *cpu, status_flag_t flag, bool value)
-{
-    if (value)
-        cpu->reg.P |= (1 << flag);
-    else
-        cpu->reg.P &= ~(1 << flag);
-}
-
-/* Update Zero and Negative Flags Based on Value */
-static inline void update_zero_and_negative_flags(cpu_6502_t *cpu,
-                                                  uint8_t value)
-{
-    set_flag(cpu, FLAG_ZERO, value == 0);
-    set_flag(cpu, FLAG_NEGATIVE, (value & 0x80) != 0);
-}
-
 /* Addressing Mode Functions */
 
 /* Immediate Addressing */
@@ -1098,7 +1076,7 @@ static void initialize_opcode_table()
     opcode_table[0xC5] =
         (opcode_entry_t){0xC5, "CMP", instr_cmp, addr_zero_page, 3, 2};
     opcode_table[0xD5] =
-        (opcode_entry_t){0xD5, "CMP", instr_cmp, addr_zero_page_x, 4, 2};
+        (opcode_entry_t){0xD5, "CMP", instr_cmp, addr_zero_page_x, 3, 2};
     opcode_table[0xCD] =
         (opcode_entry_t){0xCD, "CMP", instr_cmp, addr_absolute, 4, 3};
     opcode_table[0xDD] =
@@ -1130,7 +1108,7 @@ static void initialize_opcode_table()
     opcode_table[0xC6] =
         (opcode_entry_t){0xC6, "DEC", instr_dec, addr_zero_page, 5, 2};
     opcode_table[0xD6] =
-        (opcode_entry_t){0xD6, "DEC", instr_dec, addr_zero_page_x, 6, 2};
+        (opcode_entry_t){0xD6, "DEC", instr_dec, addr_zero_page_x, 5, 2};
     opcode_table[0xCE] =
         (opcode_entry_t){0xCE, "DEC", instr_dec, addr_absolute, 6, 3};
     opcode_table[0xDE] =
@@ -1164,9 +1142,9 @@ static void initialize_opcode_table()
     opcode_table[0xE6] =
         (opcode_entry_t){0xE6, "INC", instr_inc, addr_zero_page, 5, 2};
     opcode_table[0xF6] =
-        (opcode_entry_t){0xF6, "INC", instr_inc, addr_zero_page_x, 6, 2};
+        (opcode_entry_t){0xF6, "INC", instr_inc, addr_zero_page_x, 5, 2};
     opcode_table[0xEE] =
-        (opcode_entry_t){0xEE, "INC", instr_inc, addr_absolute, 6, 3};
+        (opcode_entry_t){0xEE, "INC", instr_inc, addr_absolute, 7, 3};
     opcode_table[0xFE] =
         (opcode_entry_t){0xFE, "INC", instr_inc, addr_absolute_x, 7, 3};
 
@@ -1236,7 +1214,7 @@ static void initialize_opcode_table()
     opcode_table[0x56] =
         (opcode_entry_t){0x56, "LSR", instr_lsr, addr_zero_page_x, 6, 2};
     opcode_table[0x4E] =
-        (opcode_entry_t){0x4E, "LSR", instr_lsr, addr_absolute, 6, 3};
+        (opcode_entry_t){0x4E, "LSR", instr_lsr, addr_absolute, 7, 3};
     opcode_table[0x5E] =
         (opcode_entry_t){0x5E, "LSR", instr_lsr, addr_absolute_x, 7, 3};
 
@@ -1281,7 +1259,7 @@ static void initialize_opcode_table()
     opcode_table[0x36] =
         (opcode_entry_t){0x36, "ROL", instr_rol, addr_zero_page_x, 6, 2};
     opcode_table[0x2E] =
-        (opcode_entry_t){0x2E, "ROL", instr_rol, addr_absolute, 6, 3};
+        (opcode_entry_t){0x2E, "ROL", instr_rol, addr_absolute, 7, 3};
     opcode_table[0x3E] =
         (opcode_entry_t){0x3E, "ROL", instr_rol, addr_absolute_x, 7, 3};
 
@@ -1293,7 +1271,7 @@ static void initialize_opcode_table()
     opcode_table[0x76] =
         (opcode_entry_t){0x76, "ROR", instr_ror, addr_zero_page_x, 6, 2};
     opcode_table[0x6E] =
-        (opcode_entry_t){0x6E, "ROR", instr_ror, addr_absolute, 6, 3};
+        (opcode_entry_t){0x6E, "ROR", instr_ror, addr_absolute, 7, 3};
     opcode_table[0x7E] =
         (opcode_entry_t){0x7E, "ROR", instr_ror, addr_absolute_x, 7, 3};
 
@@ -1306,10 +1284,12 @@ static void initialize_opcode_table()
     /* SBC (Subtract with Carry) */
     opcode_table[0xE9] =
         (opcode_entry_t){0xE9, "SBC", instr_sbc, addr_immediate, 2, 2};
+    opcode_table[0xEB] =
+        (opcode_entry_t){0xEB, "SBC", instr_sbc, addr_immediate, 2, 2};
     opcode_table[0xE5] =
         (opcode_entry_t){0xE5, "SBC", instr_sbc, addr_zero_page, 3, 2};
     opcode_table[0xF5] =
-        (opcode_entry_t){0xF5, "SBC", instr_sbc, addr_zero_page_x, 4, 2};
+        (opcode_entry_t){0xF5, "SBC", instr_sbc, addr_zero_page_x, 3, 2};
     opcode_table[0xED] =
         (opcode_entry_t){0xED, "SBC", instr_sbc, addr_absolute, 4, 3};
     opcode_table[0xFD] =
@@ -1394,11 +1374,18 @@ cpu_status_t cpu_init(cpu_6502_t *cpu)
     cpu->reg.X = 0x00;
     cpu->reg.Y = 0x00;
     cpu->reg.PC = 0x0000;
-    cpu->reg.SP = 0xFD;
-    cpu->reg.P = 0x24;
+    cpu->reg.SP = 0xFD;  // Stack pointer starts at 0xFD (real 6502 behavior)
+    cpu->reg.P = 0x34;
 
     // Initialize clock (default 1 MHz)
     if (clock_init(&cpu->clock, 1e6) != 0) // 1 MHz
+    {
+        return CPU_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Initialize bus
+    cpu->bus = bus_create();
+    if (!cpu->bus)
     {
         return CPU_ERROR_INVALID_ARGUMENT;
     }
@@ -1514,7 +1501,7 @@ void cpu_reset(cpu_6502_t *cpu)
     cpu->reg.X = 0x00;
     cpu->reg.Y = 0x00;
     cpu->reg.SP = 0xFD;
-    cpu->reg.P = FLAG_INTERRUPT | FLAG_UNUSED;
+    cpu->reg.P = 0x34;
 
     // Set Program Counter to reset vector
     uint8_t low = cpu_read(cpu, 0xFFFC);

@@ -1,5 +1,5 @@
-#ifndef CPU_CLOCK_H
-#define CPU_CLOCK_H
+#ifndef CLOCK_H
+#define CLOCK_H
 
 #include <stdint.h>
 

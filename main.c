@@ -1317,13 +1317,13 @@ void *emulator_loop(void *arg)
 
             // If PC moved to a new block (e.g. from 0..127 into 128..255),
             // we update memory_view_page
-            if (new_page != memory_view_page)
-            {
+            // if (new_page != memory_view_page)
+            // {
                 memory_view_page = new_page;
                 // If we go beyond 0xFFFF / 128 => wrap to 0
                 if (memory_view_page * BYTES_PER_PAGE > 0xFFFF)
                     memory_view_page = 0;
-            }
+            // }
             // ================================================================
 
             // Performance calculation

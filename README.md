@@ -32,7 +32,7 @@
 
 Run the emulator with a ROM file:
 ```bash
-./6502-term roms/hello.bin
+./emu65 roms/hello.bin
 ```
 
 In debugging mode, you can:

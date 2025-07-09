@@ -3,7 +3,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -g
 
 # Target executable
-TARGET = emulator
+TARGET = emu65
 
 # Source files
 SRCS = main.c cpu_6502.c cpu_clock.c memory.c monitored.c bus.c queue.c event_queue.c
